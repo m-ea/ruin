@@ -97,11 +97,11 @@ pnpm dev
 
 This starts:
 - **Server** (Colyseus + Express) on port `2567`
-- **Client** (Vite dev server) on port `3000`
+- **Client** (Vite dev server) on port `3009`
 
 ### 8. Open the game
 
-Navigate to [http://localhost:3000](http://localhost:3000) in your browser.
+Navigate to [http://localhost:3009](http://localhost:3009) in your browser.
 
 You'll see a green 10x10 tilemap. The connection will fail with "Connection failed — see console for details" because there's no login UI yet. This is expected for Phase 0b.
 
@@ -153,7 +153,7 @@ Phaser 3 browser client. **Dumb renderer and input sender**. The client displays
 
 | Command | Description |
 |---------|-------------|
-| `pnpm dev` | Start server (port 2567) and client (port 3000) concurrently |
+| `pnpm dev` | Start server (port 2567) and client (port 3009) concurrently |
 | `pnpm build` | Build `@ruin/shared` and `@ruin/server` (production) |
 | `pnpm test` | Run all tests (requires Postgres with `ruin_test` database) |
 | `pnpm db:migrate` | Run database migrations on development database |

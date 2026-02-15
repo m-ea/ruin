@@ -8,7 +8,7 @@ import { defineConfig } from 'vite';
 export default defineConfig({
   server: {
     host: '0.0.0.0', // Listen on all interfaces (IPv4 and IPv6)
-    port: 3000,
+    port: 3009,
     proxy: {
       // Proxy auth requests to backend server (avoids CORS during development)
       '/auth': {
