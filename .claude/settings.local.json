@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pnpm build:*)",
+      "Bash(pnpm dev)",
+      "Bash(ping:*)",
+      "Bash(pnpm exec tsx:*)",
+      "Bash(netstat:*)",
+      "Bash(findstr:*)",
+      "Bash(pnpm add:*)",
+      "Bash(curl:*)"
+    ]
+  }
+}

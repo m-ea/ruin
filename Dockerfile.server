@@ -1,0 +1,35 @@
+# Stage 1: Install dependencies
+FROM node:20-alpine AS deps
+RUN apk add --no-cache python3 make g++
+RUN corepack enable && corepack prepare pnpm@latest --activate
+WORKDIR /app
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY packages/shared/package.json ./packages/shared/
+COPY packages/server/package.json ./packages/server/
+RUN pnpm install --frozen-lockfile
+RUN pnpm rebuild bcrypt
+
+# Stage 2: Build
+FROM node:20-alpine AS build
+RUN corepack enable && corepack prepare pnpm@latest --activate
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_modules
+COPY --from=deps /app/packages/server/node_modules ./packages/server/node_modules
+COPY . .
+RUN pnpm build
+
+# Stage 3: Production
+FROM node:20-alpine AS production
+RUN corepack enable && corepack prepare pnpm@latest --activate
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_modules
+COPY --from=deps /app/packages/server/node_modules ./packages/server/node_modules
+COPY --from=build /app/packages/shared/dist ./packages/shared/dist
+COPY --from=build /app/packages/server/dist ./packages/server/dist
+COPY --from=deps /app/packages/shared/package.json ./packages/shared/
+COPY --from=deps /app/packages/server/package.json ./packages/server/
+COPY package.json pnpm-workspace.yaml ./
+EXPOSE 2567
+CMD ["node", "packages/server/dist/index.js"]
