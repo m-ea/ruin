@@ -1,4 +1,6 @@
 /**
- * Client-server message types. Populated in Phase 1+.
+ * Client-server message types.
  */
-export enum MessageType {}
+export enum MessageType {
+  INPUT = 'input',
+}

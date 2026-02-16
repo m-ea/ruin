@@ -7,11 +7,32 @@
 import { config as dotenvConfig } from 'dotenv';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
 
-// Get the project root directory (4 levels up from this file: src/config → src → server → packages → root)
+/**
+ * Finds the project root by walking up the directory tree.
+ * Looks for a package.json with name "ruin".
+ * This is more robust than counting '../' hops, which breaks when files move.
+ */
+function findProjectRoot(startDir: string): string {
+  let dir = startDir;
+  while (dir !== dirname(dir)) {
+    const pkgPath = resolve(dir, 'package.json');
+    if (existsSync(pkgPath)) {
+      const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+      if (pkg.name === 'ruin') {
+        return dir;
+      }
+    }
+    dir = dirname(dir);
+  }
+  throw new Error('Could not find project root (package.json with name "ruin")');
+}
+
+// Find project root and load .env
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const projectRoot = resolve(__dirname, '../../../..');
+const projectRoot = findProjectRoot(__dirname);
 
 // Load .env from project root
 dotenvConfig({ path: resolve(projectRoot, '.env') });

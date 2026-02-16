@@ -388,6 +388,57 @@ server {
 
 ---
 
+## 🔧 Troubleshooting
+
+### PostgreSQL Port Conflict (Windows/macOS)
+
+If you have PostgreSQL already installed locally, Docker may fail to bind to port 5432.
+
+**Symptoms:**
+- `docker compose up postgres` fails with port binding error
+- `createdb` connects to wrong PostgreSQL instance
+
+**Solution:**
+
+1. Edit `docker-compose.yml` to remap the port:
+   ```yaml
+   postgres:
+     ports:
+       - "5433:5432"  # Change from 5432:5432
+   ```
+
+2. Update `DATABASE_URL` in `.env`:
+   ```
+   DATABASE_URL=postgresql://ruin:ruin@localhost:5433/ruin
+   ```
+
+3. Recreate databases using the new port:
+   ```bash
+   createdb -h localhost -p 5433 -U ruin ruin
+   createdb -h localhost -p 5433 -U ruin ruin_test
+   ```
+
+### bcrypt Native Module Errors
+
+If tests or the server fail with `Cannot find module 'bcrypt_lib.node'` or similar errors:
+
+**Solution:**
+```bash
+pnpm rebuild bcrypt
+```
+
+**Docker/Alpine Linux:**
+
+If building in a Docker container based on Alpine Linux, ensure native build tools are installed before `pnpm install`:
+
+```dockerfile
+RUN apk add --no-cache python3 make g++
+RUN pnpm install --frozen-lockfile
+RUN pnpm rebuild bcrypt
+```
+
+---
+
 ## 🤝 Contributing
 
 This project is in early development. Contributions are welcome once core systems stabilize.

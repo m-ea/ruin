@@ -21,6 +21,9 @@ export class PlayerState extends Schema {
 
   /** Tile coordinate Y position */
   @type('number') y: number = 0;
+
+  /** Last input sequence number processed by the server (0 = none yet) */
+  @type('number') lastProcessedSequenceNumber: number = 0;
 }
 
 /**
