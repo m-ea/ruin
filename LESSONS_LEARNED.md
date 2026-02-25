@@ -3,12 +3,13 @@
 Reference this document when creating Claude Code prompts for the Ruin project. These are hard-won patterns discovered during implementation. Violating them will cause debugging sessions.
 
 Include relevant sections based on the task:
-- Server changes: Sections 1, 2, 3, 5, 7, 8, 12
-- Client changes: Sections 6, 10
+- Server changes: Sections 1, 2, 3, 5, 7, 8, 12, 13
+- Client changes: Sections 6, 10, 14
 - Config or path resolution changes: Sections 3, 4, 5
 - Docker or deployment: Sections 9, 11
-- New Colyseus features: Sections 7, 8, 12
+- New Colyseus features: Sections 7, 8, 12, 13, 14
 - Adding new dependencies: Sections 1, 2
+- New schema classes: Section 13
 
 For major prompts or debugging sessions, include the full Quick Reference section at the end.
 
@@ -193,6 +194,29 @@ When working with Colyseus in pnpm + ESM, these are the packages that must be di
 
 Do NOT rely on the `colyseus` meta-package to provide these transitively. pnpm's strict ESM resolution requires all imported packages as direct dependencies — transitive imports will fail with ERR_MODULE_NOT_FOUND at runtime.
 
+## 13. Colyseus Schema + TypeScript ES2022 Class Fields
+
+When TypeScript's `target` is `ES2022` or later, `useDefineForClassFields` defaults to `true`. This causes class field initializers to use `Object.defineProperty` semantics, which **silently breaks `@colyseus/schema` decorators**.
+
+The `@type()` decorator installs getter/setter accessors on the class prototype to track changes via the ChangeTree. Native ES2022 class fields overwrite these accessors with plain value properties. Result: state sync produces zero bytes, no patches are ever sent, and the client receives empty state. There are NO runtime errors and NO TypeScript errors — the failure is completely silent.
+
+**Required in server tsconfig.json:**
+```json
+{
+  "compilerOptions": {
+    "useDefineForClassFields": false
+  }
+}
+```
+
+**Rule:** Any tsconfig that compiles Colyseus schema classes MUST set `useDefineForClassFields: false`. This applies to the server package. Verify this whenever changing TypeScript target or creating new packages that define schema classes.
+
+## 14. Colyseus Client Schema Typing
+
+The Colyseus.js client SDK (`colyseus.js`) returns dynamically-typed schema proxies in callbacks like `room.state.players.onAdd()`. There is no static TypeScript type for server-defined schemas on the client side without a Colyseus schema codegen step.
+
+**Rule:** `any` type is acceptable for Colyseus client schema proxy parameters in `onAdd`, `onRemove`, and `onChange` callbacks. This is the only permitted use of `any` in the codebase. Add a comment at each usage explaining why.
+
 ---
 
 ## Quick Reference: Current Project State
@@ -200,14 +224,14 @@ Do NOT rely on the `colyseus` meta-package to provide these transitively. pnpm's
 When writing prompts, include the current state so the agent knows what exists:
 
 ### Packages
-- `@ruin/shared` — Types (IPlayer, IWorldSave, INpc, messages) and constants (TICK_RATE=20, MAX_PARTY_SIZE=8, TILE_SIZE=16)
+- `@ruin/shared` — Direction enum, GameMap/TileType, processPlayerInput(), TOWN_MAP, TICK_RATE=20, TILE_SIZE=16, MessageType, InputMessage
 - `@ruin/server` — Colyseus game server + Express auth API + PostgreSQL persistence
-- `@ruin/client` — Phaser 3 browser client with Vite
+- `@ruin/client` — Phaser 3 browser client with Vite (port 3009)
 
 ### Server Entry Points
 - `createApp(pool)` — Returns configured Express app (used by tests, no Colyseus)
 - `createGameServer(app)` — Wraps Express in HTTP server, creates Colyseus Server, returns it
-- Standalone startup: calls both, then `gameServer.listen(port)`
+- Standalone startup: calls both, then `gameServer.listen(2567)`
 
 ### Database
 - Migration runner with `schema_migrations` tracking table
@@ -217,12 +241,20 @@ When writing prompts, include the current state so the agent knows what exists:
 ### Colyseus
 - `WorldRoom` registered as "world"
 - `WorldState` schema with `MapSchema<PlayerState>`
-- `PlayerState`: sessionId, name, x, y
+- `PlayerState`: sessionId, name, x, y, lastProcessedSequenceNumber
 - JWT verification in `onJoin`, close code 4001 on failure
+- 20Hz tick loop via `setSimulationInterval`; one queued input processed per player per tick
 - Session-scoped Pino child loggers
 
+### Client
+- `BootScene` — Generates tile textures (ground, wall, water), transitions to WorldScene
+- `WorldScene` — Renders TOWN_MAP, auto-registers, connects to "world" room, 20Hz client tick
+- `InputManager` — Layout-independent key capture via `KeyboardEvent.code`, last-pressed-wins
+- `PredictionBuffer` — Client-side prediction with server reconciliation on `lastProcessedSequenceNumber`
+- `NetworkClient` — `joinWorld()`, `sendInput()`, static `autoRegister()`
+
 ### Tests
-- 11 passing: 7 auth integration + 4 schema unit
+- 48 passing: 7 auth + 4 schema + 11 movement + 7 tick + 12 direction + 7 PredictionBuffer
 - Test DB: `ruin_test` (separate from dev DB `ruin`)
 - Tests use `createApp(pool)` directly (no Colyseus)
 
@@ -230,3 +262,4 @@ When writing prompts, include the current state so the agent knows what exists:
 - Full ESM, Node 20, TypeScript strict
 - pnpm workspaces, scoped packages
 - Docker Compose: Postgres 16 + optional server container
+- Server tsconfig: `experimentalDecorators`, `emitDecoratorMetadata`, `useDefineForClassFields: false`
