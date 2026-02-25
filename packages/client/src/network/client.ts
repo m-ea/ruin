@@ -4,6 +4,7 @@
  */
 
 import * as Colyseus from 'colyseus.js';
+import { type InputMessage, MessageType } from '@ruin/shared';
 
 /**
  * NetworkClient handles all Colyseus server communication.
@@ -40,6 +41,15 @@ export class NetworkClient {
   }
 
   /**
+   * Sends a player input message to the server.
+   * Silently ignores if not connected to a room.
+   */
+  sendInput(input: InputMessage): void {
+    if (!this.room) return;
+    this.room.send(MessageType.INPUT, input);
+  }
+
+  /**
    * Leaves the current room if connected.
    */
   async leave(): Promise<void> {
@@ -56,6 +66,38 @@ export class NetworkClient {
    */
   getRoom(): Colyseus.Room | null {
     return this.room;
+  }
+
+  // Temporary auto-register for development. Will be replaced with login UI.
+  /**
+   * Registers a new account with a random email/password.
+   * Retries on 409 (email conflict) up to 3 total attempts.
+   *
+   * @returns Promise resolving to token and accountId
+   */
+  static async autoRegister(): Promise<{ token: string; accountId: string }> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const email = `player_${Math.random().toString(36).slice(2, 10)}@ruin.local`;
+      const password = Math.random().toString(36).slice(2, 14);
+
+      const response = await fetch('/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      });
+
+      if (response.status === 409) continue;
+
+      if (response.status !== 201) {
+        const body = await response.text();
+        throw new Error(`Registration failed (${response.status}): ${body}`);
+      }
+
+      const data = (await response.json()) as { token: string; accountId: string };
+      return data;
+    }
+
+    throw new Error('Registration failed after 3 attempts (email conflicts)');
   }
 }
 

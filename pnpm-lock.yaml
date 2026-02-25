@@ -35,6 +35,9 @@ importers:
 
   packages/client:
     dependencies:
+      '@ruin/shared':
+        specifier: workspace:*
+        version: link:../shared
       colyseus.js:
         specifier: ^0.15.0
         version: 0.15.28

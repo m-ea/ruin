@@ -5,7 +5,8 @@
     "rootDir": "src",
     "lib": ["ES2022"],
     "experimentalDecorators": true,
-    "emitDecoratorMetadata": true
+    "emitDecoratorMetadata": true,
+    "useDefineForClassFields": false
   },
   "references": [{ "path": "../shared" }],
   "include": ["src"]

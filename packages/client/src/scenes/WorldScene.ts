@@ -1,154 +1,234 @@
 /**
  * WorldScene - Main gameplay scene.
- * Handles world rendering, network connection, and player state synchronization.
+ * Handles world rendering, network connection, player input,
+ * client-side prediction, and server reconciliation.
  */
 
 import Phaser from 'phaser';
 import type { Room } from 'colyseus.js';
-import { networkClient } from '../network/client';
+import {
+  Direction,
+  processPlayerInput,
+  TOWN_MAP,
+  TILE_SIZE,
+  TICK_RATE,
+  TileType,
+} from '@ruin/shared';
+import { NetworkClient, networkClient } from '../network/client';
+import { InputManager } from '../input/InputManager';
+import { PredictionBuffer } from '../network/PredictionBuffer';
 
-/**
- * Player colors by join order (index 0-7).
- */
-const PLAYER_COLORS = [
-  0x3498db, // Blue
+/** Remote player colors by add order. Cosmetic only — may differ across clients. */
+const REMOTE_COLORS = [
   0xe74c3c, // Red
   0x2ecc71, // Green
   0xf39c12, // Orange
   0x9b59b6, // Purple
-  0x9b59b6, // Purple
-  0x9b59b6, // Purple
-  0x9b59b6, // Purple
 ];
 
-export class WorldScene extends Phaser.Scene {
-  /** Map of player session IDs to their sprite game objects */
-  private playerSprites = new Map<string, Phaser.GameObjects.Rectangle>();
+const TILE_COLORS: Record<TileType, number> = {
+  [TileType.GROUND]: 0x4a7c59,
+  [TileType.WALL]: 0x8b7355,
+  [TileType.WATER]: 0x2980b9,
+};
 
-  /** Reference to the current Colyseus room (if connected) */
+export class WorldScene extends Phaser.Scene {
+  private inputManager!: InputManager;
+  private predictionBuffer!: PredictionBuffer;
   private room: Room | null = null;
+  private localSessionId: string | null = null;
+  private localPlayerSprite: Phaser.GameObjects.Rectangle | null = null;
+  private remotePlayerSprites: Map<string, Phaser.GameObjects.Rectangle> =
+    new Map();
+  private sequenceNumber: number = 0;
+  private localPredictedX: number = 0;
+  private localPredictedY: number = 0;
+  private lastReconcileSeq: number = 0;
+  private connected: boolean = false;
+  private tickEvent: Phaser.Time.TimerEvent | null = null;
 
   constructor() {
     super({ key: 'World' });
   }
 
-  /**
-   * Create phase - set up the world and attempt network connection.
-   */
   async create(): Promise<void> {
-    // Recreate the tilemap (same as BootScene)
-    this.createTilemap();
+    // 1. Render TOWN_MAP as colored rectangles
+    this.renderTilemap();
 
-    // Attempt to connect to the game server
-    await this.connectToServer();
-  }
+    // 2. Create input and prediction systems
+    this.inputManager = new InputManager(this);
+    this.predictionBuffer = new PredictionBuffer();
 
-  /**
-   * Recreates the 10x10 grass tilemap.
-   */
-  private createTilemap(): void {
-    // Create tilemap data programmatically
-    const mapData: number[][] = [];
-    for (let y = 0; y < 10; y++) {
-      const row: number[] = [];
-      for (let x = 0; x < 10; x++) {
-        row.push(0); // Tile index 0 = grass
-      }
-      mapData.push(row);
-    }
-
-    // Create tilemap from data
-    const map = this.make.tilemap({
-      data: mapData,
-      tileWidth: 16,
-      tileHeight: 16,
-    });
-
-    // Add the tileset using our generated texture
-    const tileset = map.addTilesetImage('tiles', 'tiles');
-
-    if (!tileset) {
-      console.error('Failed to create tileset');
-      return;
-    }
-
-    // Create layer from tileset
-    map.createLayer(0, tileset, 0, 0);
-  }
-
-  /**
-   * Attempts to connect to the Colyseus game server.
-   * Uses a placeholder token that will fail authentication (expected for Phase 0b).
-   */
-  private async connectToServer(): Promise<void> {
+    // 3. Connect to server
     try {
-      // Attempt to join with placeholder credentials
-      // This WILL fail because the token is invalid - that is expected for this phase
-      this.room = await networkClient.joinWorld(
-        'DEV_TOKEN_PLACEHOLDER',
-        'test-world',
-      );
-
-      // If connection succeeds (future phases with real auth), set up state listeners
-      this.setupRoomListeners();
+      const { token } = await NetworkClient.autoRegister();
+      this.room = await networkClient.joinWorld(token, 'dev-world');
+      this.localSessionId = this.room.sessionId;
+      this.connected = true;
+      console.log('Connected to server, sessionId:', this.localSessionId);
     } catch (error) {
-      // Connection failed - display error message
       console.error('Failed to connect to game server:', error);
-
       this.add
         .text(400, 300, 'Connection failed — see console for details', {
           fontSize: '16px',
           color: '#ffffff',
         })
         .setOrigin(0.5);
+      return;
+    }
+
+    // 4. Set up state listeners
+    this.setupRoomListeners();
+
+    // 5. Start client tick loop
+    this.tickEvent = this.time.addEvent({
+      delay: 1000 / TICK_RATE,
+      loop: true,
+      callback: () => this.clientTick(),
+    });
+  }
+
+  private renderTilemap(): void {
+    for (let y = 0; y < TOWN_MAP.height; y++) {
+      const row = TOWN_MAP.tiles[y]!;
+      for (let x = 0; x < TOWN_MAP.width; x++) {
+        const tile = row[x]!;
+        const color = TILE_COLORS[tile];
+        this.add
+          .rectangle(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, TILE_SIZE, color)
+          .setOrigin(0, 0);
+      }
     }
   }
 
-  /**
-   * Sets up listeners for room state changes.
-   * Handles player add/remove/update events.
-   */
   private setupRoomListeners(): void {
     if (!this.room) return;
 
-    // Listen for players being added to the room
-    this.room.state.players.onAdd((player, sessionId) => {
-      console.log('Player joined:', sessionId, player.name);
+    this.room.state.players.onAdd((player: any, sessionId: string) => {
+      const isLocal = sessionId === this.localSessionId;
 
-      // Determine player color by join order (index in the map)
-      const playerIndex = Array.from(this.room!.state.players.keys()).indexOf(
-        sessionId,
-      );
-      const color = PLAYER_COLORS[playerIndex] ?? PLAYER_COLORS[4]; // Default to purple
+      if (isLocal) {
+        this.localPlayerSprite = this.add.rectangle(
+          player.x * TILE_SIZE + TILE_SIZE / 2,
+          player.y * TILE_SIZE + TILE_SIZE / 2,
+          TILE_SIZE,
+          TILE_SIZE,
+          0x3498db,
+        );
+        this.localPredictedX = player.x;
+        this.localPredictedY = player.y;
 
-      // Create player sprite (16x16 colored rectangle)
-      const sprite = this.add.rectangle(
-        player.x * 16, // Convert tile coordinates to pixels
-        player.y * 16,
-        16,
-        16,
-        color,
-      );
+        this.cameras.main.startFollow(this.localPlayerSprite);
+        this.cameras.main.setBounds(
+          0,
+          0,
+          TOWN_MAP.width * TILE_SIZE,
+          TOWN_MAP.height * TILE_SIZE,
+        );
 
-      // Store sprite reference
-      this.playerSprites.set(sessionId, sprite);
+        player.onChange(() => {
+          if (!this.room || !this.localSessionId) return;
+          if (player.lastProcessedSequenceNumber > this.lastReconcileSeq) {
+            this.lastReconcileSeq = player.lastProcessedSequenceNumber;
+            this.reconcile();
+          }
+        });
+      } else {
+        // Note: color assignment is based on local add order, which may differ across clients. This is cosmetic only.
+        const colorIndex = this.remotePlayerSprites.size;
+        const color =
+          REMOTE_COLORS[colorIndex] ?? REMOTE_COLORS[REMOTE_COLORS.length - 1]!;
 
-      // Listen for position changes on this player
-      player.onChange(() => {
-        sprite.setPosition(player.x * 16, player.y * 16);
-      });
-    });
+        const sprite = this.add.rectangle(
+          player.x * TILE_SIZE + TILE_SIZE / 2,
+          player.y * TILE_SIZE + TILE_SIZE / 2,
+          TILE_SIZE,
+          TILE_SIZE,
+          color,
+        );
+        this.remotePlayerSprites.set(sessionId, sprite);
 
-    // Listen for players being removed from the room
-    this.room.state.players.onRemove((player, sessionId) => {
-      console.log('Player left:', sessionId);
-
-      // Destroy sprite and remove from map
-      const sprite = this.playerSprites.get(sessionId);
-      if (sprite) {
-        sprite.destroy();
-        this.playerSprites.delete(sessionId);
+        player.onChange(() => {
+          sprite.setPosition(
+            player.x * TILE_SIZE + TILE_SIZE / 2,
+            player.y * TILE_SIZE + TILE_SIZE / 2,
+          );
+        });
       }
     });
+
+    this.room.state.players.onRemove((_player: any, sessionId: string) => {
+      const sprite = this.remotePlayerSprites.get(sessionId);
+      if (sprite) {
+        sprite.destroy();
+        this.remotePlayerSprites.delete(sessionId);
+      }
+    });
+  }
+
+  private clientTick(): void {
+    if (!this.connected || !this.localPlayerSprite) return;
+
+    this.inputManager.cleanup();
+    const direction = this.inputManager.getCurrentDirection();
+    if (!direction) return;
+
+    this.sequenceNumber++;
+
+    // Predict locally using the same shared movement logic as the server
+    const result = processPlayerInput(
+      TOWN_MAP,
+      this.localPredictedX,
+      this.localPredictedY,
+      direction,
+    );
+    if (result.moved) {
+      this.localPredictedX = result.x;
+      this.localPredictedY = result.y;
+    }
+    this.localPlayerSprite.setPosition(
+      this.localPredictedX * TILE_SIZE + TILE_SIZE / 2,
+      this.localPredictedY * TILE_SIZE + TILE_SIZE / 2,
+    );
+
+    // Record prediction and send to server regardless of whether move succeeded
+    this.predictionBuffer.addPrediction({
+      sequenceNumber: this.sequenceNumber,
+      direction,
+    });
+    networkClient.sendInput({
+      sequenceNumber: this.sequenceNumber,
+      direction,
+    });
+  }
+
+  private reconcile(): void {
+    if (!this.room || !this.localSessionId) return;
+
+    const player = this.room.state.players.get(this.localSessionId);
+    if (!player) return;
+
+    const reconciled = this.predictionBuffer.reconcile(
+      player.x,
+      player.y,
+      player.lastProcessedSequenceNumber,
+      TOWN_MAP,
+    );
+    this.localPredictedX = reconciled.x;
+    this.localPredictedY = reconciled.y;
+
+    if (this.localPlayerSprite) {
+      this.localPlayerSprite.setPosition(
+        this.localPredictedX * TILE_SIZE + TILE_SIZE / 2,
+        this.localPredictedY * TILE_SIZE + TILE_SIZE / 2,
+      );
+    }
+  }
+
+  destroy(): void {
+    this.inputManager?.destroy();
+    this.predictionBuffer?.clear();
+    this.tickEvent?.remove();
+    this.room?.leave();
   }
 }
