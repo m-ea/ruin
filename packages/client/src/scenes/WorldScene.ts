@@ -17,6 +17,7 @@ import {
 import { NetworkClient, networkClient } from '../network/client';
 import { InputManager } from '../input/InputManager';
 import { PredictionBuffer } from '../network/PredictionBuffer';
+import { RemotePlayerInterpolation } from '../network/Interpolation';
 
 /** Remote player colors by add order. Cosmetic only — may differ across clients. */
 const REMOTE_COLORS = [
@@ -46,6 +47,9 @@ export class WorldScene extends Phaser.Scene {
   private lastReconcileSeq: number = 0;
   private connected: boolean = false;
   private tickEvent: Phaser.Time.TimerEvent | null = null;
+  private remoteInterpolations: Map<string, RemotePlayerInterpolation> = new Map();
+  private localInterpolation: RemotePlayerInterpolation | null = null;
+  private reconcileTimeout: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
     super({ key: 'World' });
@@ -118,6 +122,15 @@ export class WorldScene extends Phaser.Scene {
         this.localPredictedX = player.x;
         this.localPredictedY = player.y;
 
+        // Create interpolation for smooth visual movement. Sprite position is driven
+        // by update() via this instance — not set directly in clientTick/reconcile.
+        this.localInterpolation = new RemotePlayerInterpolation(player.x, player.y);
+        const initialPos = this.localInterpolation.getPosition();
+        this.localPlayerSprite.setPosition(
+          initialPos.x * TILE_SIZE + TILE_SIZE / 2,
+          initialPos.y * TILE_SIZE + TILE_SIZE / 2,
+        );
+
         this.cameras.main.startFollow(this.localPlayerSprite);
         this.cameras.main.setBounds(
           0,
@@ -126,11 +139,28 @@ export class WorldScene extends Phaser.Scene {
           TOWN_MAP.height * TILE_SIZE,
         );
 
+        // Note: player parameter uses `any` type — Colyseus.js returns dynamically-typed
+        // schema proxies. No static type is available without schema codegen.
         player.onChange(() => {
           if (!this.room || !this.localSessionId) return;
           if (player.lastProcessedSequenceNumber > this.lastReconcileSeq) {
             this.lastReconcileSeq = player.lastProcessedSequenceNumber;
-            this.reconcile();
+            const latency = networkClient.getSimulatedLatency();
+            if (latency > 0) {
+              // Clear any pending reconciliation to avoid redundant calls.
+              // Note: this acts as a debounce — the eventual reconcile() reads the latest
+              // room state, so it reconciles against the most recent server ack, not the
+              // one that triggered the timeout. This is acceptable for a debugging tool.
+              if (this.reconcileTimeout !== null) {
+                clearTimeout(this.reconcileTimeout);
+              }
+              this.reconcileTimeout = setTimeout(() => {
+                this.reconcileTimeout = null;
+                this.reconcile();
+              }, latency);
+            } else {
+              this.reconcile();
+            }
           }
         });
       } else {
@@ -148,21 +178,26 @@ export class WorldScene extends Phaser.Scene {
         );
         this.remotePlayerSprites.set(sessionId, sprite);
 
+        const interpolation = new RemotePlayerInterpolation(player.x, player.y);
+        this.remoteInterpolations.set(sessionId, interpolation);
+
+        // Note: player parameter uses `any` type — Colyseus.js returns dynamically-typed
+        // schema proxies. No static type is available without schema codegen.
         player.onChange(() => {
-          sprite.setPosition(
-            player.x * TILE_SIZE + TILE_SIZE / 2,
-            player.y * TILE_SIZE + TILE_SIZE / 2,
-          );
+          interpolation.updateTarget(player.x, player.y);
         });
       }
     });
 
+    // Note: _player parameter uses `any` type — Colyseus.js returns dynamically-typed
+    // schema proxies. No static type is available without schema codegen.
     this.room.state.players.onRemove((_player: any, sessionId: string) => {
       const sprite = this.remotePlayerSprites.get(sessionId);
       if (sprite) {
         sprite.destroy();
         this.remotePlayerSprites.delete(sessionId);
       }
+      this.remoteInterpolations.delete(sessionId);
     });
   }
 
@@ -186,10 +221,8 @@ export class WorldScene extends Phaser.Scene {
       this.localPredictedX = result.x;
       this.localPredictedY = result.y;
     }
-    this.localPlayerSprite.setPosition(
-      this.localPredictedX * TILE_SIZE + TILE_SIZE / 2,
-      this.localPredictedY * TILE_SIZE + TILE_SIZE / 2,
-    );
+    // Sprite position is driven by update() via localInterpolation — not set directly here.
+    this.localInterpolation?.updateTarget(this.localPredictedX, this.localPredictedY);
 
     // Record prediction and send to server regardless of whether move succeeded
     this.predictionBuffer.addPrediction({
@@ -217,11 +250,41 @@ export class WorldScene extends Phaser.Scene {
     this.localPredictedX = reconciled.x;
     this.localPredictedY = reconciled.y;
 
-    if (this.localPlayerSprite) {
+    // Sprite position is driven by update() via localInterpolation — not set directly here.
+    // updateTarget() captures the current visual position as the new start point, so
+    // reconciliation corrections lerp smoothly rather than snapping.
+    this.localInterpolation?.updateTarget(this.localPredictedX, this.localPredictedY);
+  }
+
+  /**
+   * Called by Phaser every frame (typically 60Hz).
+   * Advances all player interpolations (local and remote) and updates sprite positions.
+   * Prediction logic stays on the 20Hz clientTick — only visual positioning runs here.
+   */
+  update(_time: number, delta: number): void {
+    // Advance local player interpolation
+    if (this.localInterpolation && this.localPlayerSprite) {
+      this.localInterpolation.advance(delta);
+      const pos = this.localInterpolation.getPosition();
       this.localPlayerSprite.setPosition(
-        this.localPredictedX * TILE_SIZE + TILE_SIZE / 2,
-        this.localPredictedY * TILE_SIZE + TILE_SIZE / 2,
+        pos.x * TILE_SIZE + TILE_SIZE / 2,
+        pos.y * TILE_SIZE + TILE_SIZE / 2,
       );
+    }
+
+    // Use defensive iteration — onRemove may mutate the map during the same frame
+    for (const sessionId of this.remoteInterpolations.keys()) {
+      const interp = this.remoteInterpolations.get(sessionId);
+      if (!interp) continue;
+      interp.advance(delta);
+      const pos = interp.getPosition();
+      const sprite = this.remotePlayerSprites.get(sessionId);
+      if (sprite) {
+        sprite.setPosition(
+          pos.x * TILE_SIZE + TILE_SIZE / 2,
+          pos.y * TILE_SIZE + TILE_SIZE / 2,
+        );
+      }
     }
   }
 
@@ -230,5 +293,11 @@ export class WorldScene extends Phaser.Scene {
     this.predictionBuffer?.clear();
     this.tickEvent?.remove();
     this.room?.leave();
+    this.remoteInterpolations.clear();
+    this.localInterpolation = null;
+    if (this.reconcileTimeout !== null) {
+      clearTimeout(this.reconcileTimeout);
+      this.reconcileTimeout = null;
+    }
   }
 }

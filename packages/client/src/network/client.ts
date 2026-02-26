@@ -17,6 +17,9 @@ export class NetworkClient {
   /** Current room connection (null if not connected) */
   private room: Colyseus.Room | null = null;
 
+  /** Simulated one-way latency in ms (0 = disabled). Used for testing prediction/reconciliation. */
+  private simulatedLatencyMs: number = 0;
+
   constructor() {
     // Initialize Colyseus client with server URL from environment or default
     const serverUrl =
@@ -43,10 +46,39 @@ export class NetworkClient {
   /**
    * Sends a player input message to the server.
    * Silently ignores if not connected to a room.
+   * If simulated latency is set, the send is delayed by that amount.
    */
   sendInput(input: InputMessage): void {
     if (!this.room) return;
-    this.room.send(MessageType.INPUT, input);
+    if (this.simulatedLatencyMs > 0) {
+      setTimeout(() => {
+        // Guard against room disconnect during latency delay
+        if (this.room) {
+          this.room.send(MessageType.INPUT, input);
+        }
+      }, this.simulatedLatencyMs);
+    } else {
+      this.room.send(MessageType.INPUT, input);
+    }
+  }
+
+  /**
+   * Set simulated latency in milliseconds.
+   * When > 0, outgoing input messages are delayed by this amount and incoming
+   * reconciliation triggers in WorldScene are also delayed by this amount.
+   *
+   * Note: This does NOT delay remote player interpolation updates — only local
+   * prediction/reconciliation is affected. This is a pragmatic approximation
+   * for testing, not a full network simulation.
+   *
+   * Set to 0 to disable.
+   */
+  setSimulatedLatency(ms: number): void {
+    this.simulatedLatencyMs = ms;
+  }
+
+  getSimulatedLatency(): number {
+    return this.simulatedLatencyMs;
   }
 
   /**
@@ -106,3 +138,10 @@ export class NetworkClient {
  * Use this instance throughout the application for server communication.
  */
 export const networkClient = new NetworkClient();
+
+// Debug only — expose NetworkClient for console access.
+// Allows: window.__networkClient.setSimulatedLatency(200)
+// Remove or gate behind NODE_ENV for production.
+if (typeof window !== 'undefined') {
+  (window as any).__networkClient = networkClient;
+}
