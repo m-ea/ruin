@@ -217,6 +217,32 @@ The Colyseus.js client SDK (`colyseus.js`) returns dynamically-typed schema prox
 
 **Rule:** `any` type is acceptable for Colyseus client schema proxy parameters in `onAdd`, `onRemove`, and `onChange` callbacks. This is the only permitted use of `any` in the codebase. Add a comment at each usage explaining why.
 
+## 15. Decouple Sprite Position from Game State
+
+Client-side prediction updates tile coordinates at 20Hz (one tile per tick). If sprite positions are set directly from these coordinates, movement appears jerky. Always drive sprite positions through an interpolation layer. Both local and remote players use the same interpolation class.
+
+**Rule:** When creating an interpolation instance, immediately set the sprite position from `getPosition()` to eliminate one-frame mismatches on spawn.
+
+**Rule:** Keep prediction on the 20Hz client tick. Do NOT move prediction to 60fps update(). This preserves deterministic alignment with the server tick rate.
+
+## 16. Persistence Service Pattern
+
+Database operations for game state use standalone async functions that take a `Pool` parameter, NOT the singleton pool. This allows tests to pass their own pool connected to `ruin_test`. The singleton pool is used by route handlers and room code at runtime.
+
+**Rule:** Always `JSON.stringify()` objects before passing to JSONB parameterized queries. node-postgres does not auto-serialize JavaScript objects for JSONB columns — it calls `.toString()`, yielding `[object Object]`.
+
+## 17. Room Ownership from Database, Not Client
+
+Never trust client-supplied hostAccountId. Load the world from DB in onCreate, extract owner_id, and validate the first joiner's accountId against it. This prevents malicious clients from claiming ownership of worlds they don't own.
+
+**Rule:** In async onCreate, use `throw new Error(...)` to reject room creation — do NOT use `this.disconnect()` because no clients are connected yet. Throwing causes the client's `joinOrCreate` promise to reject.
+
+## 18. Auto-Save Overlap Protection
+
+Auto-save runs on a 60-second interval. onDispose also triggers a final save. Use a `saving` boolean flag to prevent concurrent saves. Clear the auto-save interval before the dispose save.
+
+**Rule:** onLeave should fire-and-forget its save (`void save().catch(...)`) rather than awaiting — Colyseus does not guarantee async onLeave blocks the removal lifecycle.
+
 ---
 
 ## Quick Reference: Current Project State
@@ -241,22 +267,32 @@ When writing prompts, include the current state so the agent knows what exists:
 ### Colyseus
 - `WorldRoom` registered as "world"
 - `WorldState` schema with `MapSchema<PlayerState>`
-- `PlayerState`: sessionId, name, x, y, lastProcessedSequenceNumber
-- JWT verification in `onJoin`, close code 4001 on failure
+- `PlayerState`: sessionId, name, accountId, x, y, lastProcessedSequenceNumber
+- JWT verification in `onJoin`, close code 4001 on auth failure, 4002 on ownership failure
 - 20Hz tick loop via `setSimulationInterval`; one queued input processed per player per tick
 - Session-scoped Pino child loggers
+- Auto-save every 60 seconds; final save on dispose
+- World ownership loaded from DB in onCreate (never trusted from client)
 
 ### Client
+- `LobbyUI` — Pre-game DOM lobby: create/load/join worlds, credential persistence
 - `BootScene` — Generates tile textures (ground, wall, water), transitions to WorldScene
-- `WorldScene` — Renders TOWN_MAP, auto-registers, connects to "world" room, 20Hz client tick
+- `WorldScene` — Renders TOWN_MAP, reads `window.__gameParams` from lobby, connects to world room
 - `InputManager` — Layout-independent key capture via `KeyboardEvent.code`, last-pressed-wins
 - `PredictionBuffer` — Client-side prediction with server reconciliation on `lastProcessedSequenceNumber`
-- `NetworkClient` — `joinWorld()`, `sendInput()`, static `autoRegister()`
+- `NetworkClient` — `joinWorld(token, worldSaveId, characterName?)`, `sendInput()`, static `autoRegister()` (localStorage), static `createWorld()`, `listWorlds()`, `deleteWorld()`
+- `RemotePlayerInterpolation` — Linear lerp for both local and remote player sprites at 60fps
+
+### Persistence
+- `WorldPersistence.ts` — Pure async functions: createWorld, getWorld, listWorldsByOwner, deleteWorld, createCharacter, getCharacter, saveAll
+- World routes: POST/GET/DELETE /worlds (auth middleware applied at mount time in index.ts)
+- `DEFAULT_WORLD_DATA` exported from `@ruin/shared`
 
 ### Tests
-- 48 passing: 7 auth + 4 schema + 11 movement + 7 tick + 12 direction + 7 PredictionBuffer
+- 75+ passing: 7 auth + 4 schema + 11 movement + 7 tick + 12 direction + 7 PredictionBuffer + 11 Interpolation + 8 persistence + 8 worldRoutes
 - Test DB: `ruin_test` (separate from dev DB `ruin`)
 - Tests use `createApp(pool)` directly (no Colyseus)
+- Persistence tests use beforeEach truncation for isolation
 
 ### Configuration
 - Full ESM, Node 20, TypeScript strict

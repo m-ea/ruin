@@ -15,6 +15,11 @@ export default defineConfig({
         target: 'http://localhost:2567',
         changeOrigin: true,
       },
+      // Proxy world save REST API requests to backend server
+      '/worlds': {
+        target: 'http://localhost:2567',
+        changeOrigin: true,
+      },
       // Proxy Colyseus WebSocket connections
       '/colyseus': {
         target: 'http://localhost:2567',

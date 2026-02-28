@@ -14,7 +14,7 @@ import {
   TICK_RATE,
   TileType,
 } from '@ruin/shared';
-import { NetworkClient, networkClient } from '../network/client';
+import { networkClient } from '../network/client';
 import { InputManager } from '../input/InputManager';
 import { PredictionBuffer } from '../network/PredictionBuffer';
 import { RemotePlayerInterpolation } from '../network/Interpolation';
@@ -63,10 +63,15 @@ export class WorldScene extends Phaser.Scene {
     this.inputManager = new InputManager(this);
     this.predictionBuffer = new PredictionBuffer();
 
-    // 3. Connect to server
+    // 3. Connect to server using params from lobby selection
     try {
-      const { token } = await NetworkClient.autoRegister();
-      this.room = await networkClient.joinWorld(token, 'dev-world');
+      const params = (window as any).__gameParams as {
+        worldId: string;
+        token: string;
+        characterName: string;
+        accountId: string;
+      };
+      this.room = await networkClient.joinWorld(params.token, params.worldId, params.characterName);
       this.localSessionId = this.room.sessionId;
       this.connected = true;
       console.log('Connected to server, sessionId:', this.localSessionId);

@@ -32,12 +32,18 @@ export class NetworkClient {
    *
    * @param token - JWT authentication token
    * @param worldSaveId - World save identifier
+   * @param characterName - Optional character name for first-time creation
    * @returns Promise resolving to the joined room
    */
-  async joinWorld(token: string, worldSaveId: string): Promise<Colyseus.Room> {
+  async joinWorld(
+    token: string,
+    worldSaveId: string,
+    characterName?: string,
+  ): Promise<Colyseus.Room> {
     this.room = await this.client.joinOrCreate('world', {
       token,
       worldSaveId,
+      characterName,
     });
 
     return this.room;
@@ -100,14 +106,36 @@ export class NetworkClient {
     return this.room;
   }
 
-  // Temporary auto-register for development. Will be replaced with login UI.
   /**
-   * Registers a new account with a random email/password.
-   * Retries on 409 (email conflict) up to 3 total attempts.
+   * Registers or re-logs in an account, with localStorage credential persistence.
+   *
+   * On first run: registers a new random account and saves credentials to localStorage.
+   * On subsequent runs: attempts login with stored credentials; re-registers if they fail.
    *
    * @returns Promise resolving to token and accountId
    */
   static async autoRegister(): Promise<{ token: string; accountId: string }> {
+    // Check localStorage for existing credentials
+    const stored = localStorage.getItem('ruin_credentials');
+    if (stored) {
+      try {
+        const { email, password } = JSON.parse(stored) as { email: string; password: string };
+        const loginResponse = await fetch('/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password }),
+        });
+        if (loginResponse.ok) {
+          return await loginResponse.json() as { token: string; accountId: string };
+        }
+        // Login failed — stored credentials are invalid, fall through to register
+        localStorage.removeItem('ruin_credentials');
+      } catch {
+        localStorage.removeItem('ruin_credentials');
+      }
+    }
+
+    // Register new account (retry on email conflicts)
     for (let attempt = 0; attempt < 3; attempt++) {
       const email = `player_${Math.random().toString(36).slice(2, 10)}@ruin.local`;
       const password = Math.random().toString(36).slice(2, 14);
@@ -126,10 +154,61 @@ export class NetworkClient {
       }
 
       const data = (await response.json()) as { token: string; accountId: string };
+
+      // Save credentials to localStorage for next session
+      localStorage.setItem('ruin_credentials', JSON.stringify({ email, password }));
+
       return data;
     }
 
-    throw new Error('Registration failed after 3 attempts (email conflicts)');
+    throw new Error('Registration failed after 3 attempts');
+  }
+
+  /**
+   * Creates a new world save.
+   */
+  static async createWorld(
+    token: string,
+    name: string,
+  ): Promise<{ id: string; name: string }> {
+    const response = await fetch('/worlds', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ name }),
+    });
+    if (!response.ok) throw new Error(`Create world failed: ${response.status}`);
+    const data = (await response.json()) as { world: { id: string; name: string } };
+    return data.world;
+  }
+
+  /**
+   * Lists all world saves owned by the authenticated user.
+   */
+  static async listWorlds(
+    token: string,
+  ): Promise<Array<{ id: string; name: string; updatedAt: string }>> {
+    const response = await fetch('/worlds', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) throw new Error(`List worlds failed: ${response.status}`);
+    const data = (await response.json()) as {
+      worlds: Array<{ id: string; name: string; updatedAt: string }>;
+    };
+    return data.worlds;
+  }
+
+  /**
+   * Deletes a world save (owner only).
+   */
+  static async deleteWorld(token: string, worldId: string): Promise<void> {
+    const response = await fetch(`/worlds/${worldId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) throw new Error(`Delete world failed: ${response.status}`);
   }
 }
 

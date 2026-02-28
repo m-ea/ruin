@@ -13,8 +13,11 @@ export class PlayerState extends Schema {
   /** Unique session identifier assigned by Colyseus */
   @type('string') sessionId: string = '';
 
-  /** Player display name (currently email, will be character name in future phases) */
+  /** Player display name (character name from DB) */
   @type('string') name: string = '';
+
+  /** Account ID of the player who owns this character (used for hosting model in Phase 2b) */
+  @type('string') accountId: string = '';
 
   /** Tile coordinate X position */
   @type('number') x: number = 0;

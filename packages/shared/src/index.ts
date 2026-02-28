@@ -25,3 +25,4 @@ export * from './maps/town.js';
 // Export all constants
 export { TICK_RATE, MAX_PARTY_SIZE, TILE_SIZE } from './constants/game.js';
 export { MessageType } from './constants/network.js';
+export * from './constants/world.js';

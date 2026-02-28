@@ -7,12 +7,26 @@
     <style>
       body {
         margin: 0;
+        background: #1a1a2e;
+        color: #ffffff;
+        font-family: monospace;
+      }
+      #lobby-container {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        min-height: 100vh;
+        color: #ffffff;
+        font-family: monospace;
+      }
+      #game-container {
+        display: none;
         overflow: hidden;
-        background: black;
       }
     </style>
   </head>
   <body>
+    <div id="lobby-container"></div>
     <div id="game-container"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

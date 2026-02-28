@@ -15,6 +15,8 @@ import { correlationIdMiddleware } from './logging/correlationId.js';
 import { pool, testConnection } from './db/pool.js';
 import { runMigrations } from './db/migrate.js';
 import authRoutes from './auth/routes.js';
+import { authMiddleware } from './auth/middleware.js';
+import { createWorldRoutes } from './world/routes.js';
 import { WorldRoom } from './rooms/WorldRoom.js';
 
 /**
@@ -35,6 +37,9 @@ export function createApp(dbPool: Pool): Express {
 
   // Mount auth routes
   app.use('/auth', authRoutes);
+
+  // Mount world routes — auth middleware applied at mount level (sets req.accountId)
+  app.use('/worlds', authMiddleware, createWorldRoutes(dbPool));
 
   return app;
 }

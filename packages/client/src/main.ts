@@ -1,26 +1,41 @@
 /**
  * Ruin client entry point.
- * Initializes the Phaser game instance with configured scenes.
+ * Shows lobby first. When the player selects a world, initializes the Phaser game.
  */
 
 import Phaser from 'phaser';
 import { BootScene } from './scenes/BootScene';
 import { WorldScene } from './scenes/WorldScene';
+import { LobbyUI } from './lobby/LobbyUI';
 
-// Phaser game configuration
-const config: Phaser.Types.Core.GameConfig = {
-  type: Phaser.AUTO,
-  parent: 'game-container',
-  width: 800,
-  height: 600,
-  pixelArt: true,
-  scale: {
-    mode: Phaser.Scale.FIT,
-    autoCenter: Phaser.Scale.CENTER_BOTH,
-  },
-  scene: [BootScene, WorldScene],
-  backgroundColor: '#1a1a2e',
-};
+const lobbyContainer = document.getElementById('lobby-container')!;
+const gameContainer = document.getElementById('game-container')!;
 
-// Create and start the game
-new Phaser.Game(config);
+const lobby = new LobbyUI(lobbyContainer, (worldId, characterName) => {
+  // Hide lobby, show game container
+  lobbyContainer.style.display = 'none';
+  gameContainer.style.display = 'block';
+
+  // Store params for WorldScene to read in create()
+  (window as any).__gameParams = {
+    worldId,
+    token: lobby.getToken(),
+    characterName,
+    accountId: lobby.getAccountId(),
+  };
+
+  // Create Phaser game (only after lobby selection so game-container has non-zero dimensions)
+  new Phaser.Game({
+    type: Phaser.AUTO,
+    parent: 'game-container',
+    width: 800,
+    height: 600,
+    pixelArt: true,
+    scale: {
+      mode: Phaser.Scale.FIT,
+      autoCenter: Phaser.Scale.CENTER_BOTH,
+    },
+    scene: [BootScene, WorldScene],
+    backgroundColor: '#1a1a2e',
+  });
+});
