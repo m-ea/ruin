@@ -50,6 +50,11 @@ export class WorldScene extends Phaser.Scene {
   private remoteInterpolations: Map<string, RemotePlayerInterpolation> = new Map();
   private localInterpolation: RemotePlayerInterpolation | null = null;
   private reconcileTimeout: ReturnType<typeof setTimeout> | null = null;
+  private disconnectOverlay: Phaser.GameObjects.Container | null = null;
+  private idleWarningOverlay: Phaser.GameObjects.Container | null = null;
+  private idleCountdownText: Phaser.GameObjects.Text | null = null;
+  private idleCountdownTimer: Phaser.Time.TimerEvent | null = null;
+  private idleSecondsRemaining: number = 0;
 
   constructor() {
     super({ key: 'World' });
@@ -88,6 +93,7 @@ export class WorldScene extends Phaser.Scene {
 
     // 4. Set up state listeners
     this.setupRoomListeners();
+    this.setupLifecycleListeners();
 
     // 5. Start client tick loop
     this.tickEvent = this.time.addEvent({
@@ -213,6 +219,11 @@ export class WorldScene extends Phaser.Scene {
     const direction = this.inputManager.getCurrentDirection();
     if (!direction) return;
 
+    // Dismiss idle warning if visible — any input resets the server-side idle timer
+    if (this.idleWarningOverlay) {
+      this.hideIdleWarningOverlay();
+    }
+
     this.sequenceNumber++;
 
     // Predict locally using the same shared movement logic as the server
@@ -304,5 +315,121 @@ export class WorldScene extends Phaser.Scene {
       clearTimeout(this.reconcileTimeout);
       this.reconcileTimeout = null;
     }
+    this.hideIdleWarningOverlay();
+    if (this.disconnectOverlay) {
+      this.disconnectOverlay.destroy(true);
+      this.disconnectOverlay = null;
+    }
+  }
+
+  private setupLifecycleListeners(): void {
+    if (!this.room) return;
+
+    // Idle warning — show countdown overlay
+    this.room.onMessage('idle_warning', (message: { secondsRemaining: number }) => {
+      this.showIdleWarningOverlay(message.secondsRemaining);
+    });
+
+    // Idle kick — show message briefly, then return to lobby
+    this.room.onMessage('idle_kick', (message: { reason: string }) => {
+      this.hideIdleWarningOverlay();
+      this.showDisconnectOverlay(message.reason);
+    });
+
+    // Room disconnect (any reason)
+    this.room.onLeave((code: number) => {
+      console.log('Disconnected from room, code:', code);
+
+      // Don't show overlay if one is already visible (e.g., idle_kick handled above)
+      if (this.disconnectOverlay) return;
+
+      if (code === 4005) {
+        this.showDisconnectOverlay('Disconnected due to inactivity.');
+      } else if (code === 4001) {
+        this.showDisconnectOverlay('Authentication failed.');
+      } else if (code === 4002) {
+        this.showDisconnectOverlay('You are not the owner of this world.');
+      } else if (code >= 4000) {
+        this.showDisconnectOverlay('Disconnected from server.');
+      }
+      // Normal close codes (< 4000) — e.g., player intentionally left. No overlay needed.
+    });
+  }
+
+  private showIdleWarningOverlay(secondsRemaining: number): void {
+    this.hideIdleWarningOverlay(); // Clean up any existing
+
+    const { width } = this.cameras.main;
+
+    this.idleWarningOverlay = this.add.container(0, 0);
+    this.idleWarningOverlay.setScrollFactor(0);
+    this.idleWarningOverlay.setDepth(999);
+
+    const bg = this.add.rectangle(width / 2, 30, width, 50, 0x000000, 0.8);
+    this.idleWarningOverlay.add(bg);
+
+    this.idleSecondsRemaining = secondsRemaining;
+    this.idleCountdownText = this.add.text(
+      width / 2,
+      30,
+      `Idle timeout in ${this.idleSecondsRemaining}s — press any movement key`,
+      { fontSize: '14px', color: '#ffcc00' },
+    ).setOrigin(0.5);
+    this.idleWarningOverlay.add(this.idleCountdownText);
+
+    // Countdown every second
+    this.idleCountdownTimer = this.time.addEvent({
+      delay: 1000,
+      repeat: secondsRemaining - 1,
+      callback: () => {
+        this.idleSecondsRemaining--;
+        if (this.idleCountdownText) {
+          this.idleCountdownText.setText(
+            `Idle timeout in ${this.idleSecondsRemaining}s — press any movement key`,
+          );
+        }
+      },
+    });
+  }
+
+  private hideIdleWarningOverlay(): void {
+    if (this.idleCountdownTimer) {
+      this.idleCountdownTimer.remove();
+      this.idleCountdownTimer = null;
+    }
+    if (this.idleWarningOverlay) {
+      this.idleWarningOverlay.destroy(true);
+      this.idleWarningOverlay = null;
+    }
+    this.idleCountdownText = null;
+  }
+
+  private showDisconnectOverlay(reason: string): void {
+    const { width, height } = this.cameras.main;
+
+    this.disconnectOverlay = this.add.container(0, 0);
+    this.disconnectOverlay.setScrollFactor(0);
+    this.disconnectOverlay.setDepth(1000);
+
+    const bg = this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.85);
+    this.disconnectOverlay.add(bg);
+
+    const title = this.add.text(width / 2, height / 2 - 20, 'Disconnected', {
+      fontSize: '24px',
+      color: '#ff6b6b',
+    }).setOrigin(0.5);
+    this.disconnectOverlay.add(title);
+
+    const subtitle = this.add.text(width / 2, height / 2 + 20, reason, {
+      fontSize: '14px',
+      color: '#aaaaaa',
+    }).setOrigin(0.5);
+    this.disconnectOverlay.add(subtitle);
+
+    // Return to lobby after 3 seconds.
+    // Pragmatic — reload page to reset all state. Proper scene navigation is future work.
+    this.time.delayedCall(3000, () => {
+      window.location.reload();
+    });
   }
 }

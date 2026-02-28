@@ -58,11 +58,23 @@ export class WorldRoom extends Room<WorldState> {
   /** Maximum number of concurrent clients */
   maxClients = 8;
 
+  /** Idle timeout in milliseconds (15 minutes) */
+  private static readonly IDLE_TIMEOUT_MS = 15 * 60 * 1000;
+
+  /** Idle warning sent this many ms before kick (1 minute before) */
+  private static readonly IDLE_WARNING_MS = 14 * 60 * 1000;
+
+  /** How often to check for idle players (every 30 seconds) */
+  private static readonly IDLE_CHECK_INTERVAL_MS = 30_000;
+
   /** UUID of the world save this room represents */
   private worldSaveId!: string;
 
   /** Account ID of the world save owner (loaded from DB in onCreate) */
   private hostAccountId!: string;
+
+  /** Session ID of the host player (null if host is not currently connected) */
+  private hostSessionId: string | null = null;
 
   /** Room-scoped logger with context */
   private roomLogger!: Logger;
@@ -84,6 +96,15 @@ export class WorldRoom extends Room<WorldState> {
 
   /** Overlap protection: true while a save is in progress */
   private saving: boolean = false;
+
+  /** Last input timestamp per sessionId (Date.now() value) */
+  private lastInputTime: Map<string, number> = new Map();
+
+  /** Tracks whether an idle warning has been sent to avoid repeated warnings */
+  private idleWarned: Set<string> = new Set();
+
+  /** Interval for periodic idle checks */
+  private idleCheckInterval: ReturnType<typeof setInterval> | null = null;
 
   /**
    * Called when the room is created.
@@ -132,6 +153,9 @@ export class WorldRoom extends Room<WorldState> {
       void this.autoSave();
     }, 60_000);
 
+    // Start idle timeout checker every 30 seconds
+    this.idleCheckInterval = setInterval(() => this.checkIdlePlayers(), WorldRoom.IDLE_CHECK_INTERVAL_MS);
+
     this.roomLogger.info('WorldRoom created (tick loop started at %dHz)', TICK_RATE);
   }
 
@@ -160,6 +184,13 @@ export class WorldRoom extends Room<WorldState> {
     if (!player) {
       return;
     }
+
+    // Reset idle timer on any well-formed input from a valid player.
+    // Intentionally before stale rejection — idle timeout measures player engagement,
+    // not synchronization health. A player actively pressing keys should not be kicked
+    // due to sequence number desync.
+    this.lastInputTime.set(client.sessionId, Date.now());
+    this.idleWarned.delete(client.sessionId);
 
     if (input.sequenceNumber <= player.lastProcessedSequenceNumber) {
       this.roomLogger.debug(
@@ -233,6 +264,13 @@ export class WorldRoom extends Room<WorldState> {
       return;
     }
 
+    // Track host session
+    const isHost = accountId === this.hostAccountId;
+    if (isHost) {
+      this.hostSessionId = client.sessionId;
+      this.roomLogger.info({ sessionId: client.sessionId }, 'Host player joined');
+    }
+
     // Increment join counter for this client
     this.joinCounter++;
 
@@ -296,6 +334,9 @@ export class WorldRoom extends Room<WorldState> {
 
     // Add to synced state AFTER position/name/accountId are set
     this.state.players.set(client.sessionId, player);
+
+    // Initialize idle timer — player is considered active on join
+    this.lastInputTime.set(client.sessionId, Date.now());
   }
 
   /**
@@ -304,6 +345,12 @@ export class WorldRoom extends Room<WorldState> {
    * Colyseus does not guarantee async onLeave blocks the removal lifecycle.
    */
   onLeave(client: Client, consented: boolean): void {
+    // Clear host session tracking if the host is leaving
+    if (client.sessionId === this.hostSessionId) {
+      this.hostSessionId = null;
+      this.roomLogger.info({ sessionId: client.sessionId }, 'Host player left');
+    }
+
     const charId = this.characterIdBySession.get(client.sessionId);
     const player = this.state.players.get(client.sessionId);
 
@@ -319,11 +366,48 @@ export class WorldRoom extends Room<WorldState> {
     this.accountIdBySession.delete(client.sessionId);
     this.characterIdBySession.delete(client.sessionId);
     this.inputQueues.delete(client.sessionId);
+    this.lastInputTime.delete(client.sessionId);
+    this.idleWarned.delete(client.sessionId);
 
     // Remove from synced state
     this.state.players.delete(client.sessionId);
 
     this.roomLogger.info({ sessionId: client.sessionId, consented }, 'Client left room');
+  }
+
+  /**
+   * Checks all connected players for idle timeout.
+   * Sends a warning at 14 minutes, kicks at 15 minutes.
+   * Runs on a 30-second interval — timing is approximate (±30 seconds).
+   */
+  private checkIdlePlayers(): void {
+    const now = Date.now();
+
+    for (const [sessionId, lastTime] of this.lastInputTime.entries()) {
+      const elapsed = now - lastTime;
+
+      if (elapsed >= WorldRoom.IDLE_TIMEOUT_MS) {
+        const client = this.clients.find((c) => c.sessionId === sessionId);
+        if (client) {
+          this.roomLogger.info({ sessionId }, 'Kicking idle player (no input for %dms)', elapsed);
+          // Send kick message then immediately disconnect.
+          // WebSocket flushes queued messages before close — no delay needed.
+          client.send(MessageType.IDLE_KICK, { reason: 'Disconnected due to inactivity.' });
+          client.leave(4005); // 4005 = idle timeout
+        }
+        continue;
+      }
+
+      if (elapsed >= WorldRoom.IDLE_WARNING_MS && !this.idleWarned.has(sessionId)) {
+        const client = this.clients.find((c) => c.sessionId === sessionId);
+        if (client) {
+          const secondsRemaining = Math.ceil((WorldRoom.IDLE_TIMEOUT_MS - elapsed) / 1000);
+          client.send(MessageType.IDLE_WARNING, { secondsRemaining });
+          this.idleWarned.add(sessionId);
+          this.roomLogger.debug({ sessionId, secondsRemaining }, 'Idle warning sent');
+        }
+      }
+    }
   }
 
   /**
@@ -355,10 +439,14 @@ export class WorldRoom extends Room<WorldState> {
    * Clears auto-save interval and performs a final save of all character positions.
    */
   async onDispose(): Promise<void> {
-    // Clear auto-save interval before final save
+    // Clear auto-save and idle check intervals before final save
     if (this.autoSaveInterval) {
       clearInterval(this.autoSaveInterval);
       this.autoSaveInterval = null;
+    }
+    if (this.idleCheckInterval) {
+      clearInterval(this.idleCheckInterval);
+      this.idleCheckInterval = null;
     }
 
     if (this.saving) {

@@ -243,6 +243,36 @@ Auto-save runs on a 60-second interval. onDispose also triggers a final save. Us
 
 **Rule:** onLeave should fire-and-forget its save (`void save().catch(...)`) rather than awaiting — Colyseus does not guarantee async onLeave blocks the removal lifecycle.
 
+## 19. Vite Proxy for New Route Prefixes
+
+Every new Express route prefix (e.g., `/worlds`) must be added to `packages/client/vite.config.ts` proxy config. Without this, Vite's dev server serves `index.html` for unknown routes. The symptom is `Unexpected token '<'` errors when the client tries to parse HTML as JSON.
+
+**Rule:** When adding a server route at a new path prefix, immediately add a matching proxy entry. This is not caught by integration tests (supertest bypasses Vite).
+
+## 20. Idle Timeout Pattern
+
+Track `lastInputTime` per player in a `Map<sessionId, number>`. Reset on any well-formed input from a valid player (after shape validation, before stale rejection) — idle timeout measures engagement, not sync health. Check on a 30-second interval. Warn at 14 minutes, kick at 15 minutes.
+
+**Rule:** Idle timing is approximate (±30 seconds) due to the check interval granularity. Warning may appear between 14:00–14:30, kick between 15:00–15:30.
+
+**Rule:** Send the kick message immediately before `client.leave()` — WebSocket flushes queued frames before close. No `setTimeout` needed.
+
+**Rule:** Clean up `lastInputTime` and `idleWarned` entries in `onLeave` to prevent memory leaks.
+
+## 21. Close Code Registry
+
+Ruin uses custom Colyseus close codes (4000–4999 range):
+
+| Code | Meaning |
+|------|---------|
+| 4001 | Authentication failed (invalid JWT) |
+| 4002 | Not the world owner (first-joiner check) |
+| 4005 | Idle timeout |
+
+## 22. Hosting Model — Minecraft Realms Approach
+
+The host is the owner of the world save (determined from DB, never from client). Any authenticated player can keep the room alive — host presence is not required. Room disposes when the last player leaves (default Colyseus `autoDispose`). Host identity is tracked (`hostSessionId`) for future admin features (kick player, close world, whitelist) but has no gameplay effect in Phase 2.
+
 ---
 
 ## Quick Reference: Current Project State
@@ -250,7 +280,7 @@ Auto-save runs on a 60-second interval. onDispose also triggers a final save. Us
 When writing prompts, include the current state so the agent knows what exists:
 
 ### Packages
-- `@ruin/shared` — Direction enum, GameMap/TileType, processPlayerInput(), TOWN_MAP, TICK_RATE=20, TILE_SIZE=16, MessageType, InputMessage
+- `@ruin/shared` — Direction enum, GameMap/TileType, processPlayerInput(), TOWN_MAP, TICK_RATE=20, TILE_SIZE=16, MessageType (INPUT/IDLE_WARNING/IDLE_KICK), InputMessage, IdleWarningMessage, IdleKickMessage
 - `@ruin/server` — Colyseus game server + Express auth API + PostgreSQL persistence
 - `@ruin/client` — Phaser 3 browser client with Vite (port 3009)
 
@@ -268,16 +298,18 @@ When writing prompts, include the current state so the agent knows what exists:
 - `WorldRoom` registered as "world"
 - `WorldState` schema with `MapSchema<PlayerState>`
 - `PlayerState`: sessionId, name, accountId, x, y, lastProcessedSequenceNumber
-- JWT verification in `onJoin`, close code 4001 on auth failure, 4002 on ownership failure
+- JWT verification in `onJoin`, close codes: 4001 (auth fail), 4002 (ownership fail), 4005 (idle timeout)
 - 20Hz tick loop via `setSimulationInterval`; one queued input processed per player per tick
 - Session-scoped Pino child loggers
 - Auto-save every 60 seconds; final save on dispose
 - World ownership loaded from DB in onCreate (never trusted from client)
+- `hostSessionId` tracks currently connected host session (null when host offline)
+- Idle timeout: warn at 14min, kick at 15min; checked every 30s; reset on any valid input
 
 ### Client
 - `LobbyUI` — Pre-game DOM lobby: create/load/join worlds, credential persistence
 - `BootScene` — Generates tile textures (ground, wall, water), transitions to WorldScene
-- `WorldScene` — Renders TOWN_MAP, reads `window.__gameParams` from lobby, connects to world room
+- `WorldScene` — Renders TOWN_MAP, reads `window.__gameParams` from lobby, connects to world room; handles idle warning overlay, idle kick overlay, disconnect overlay (returns to lobby after 3s via `window.location.reload()`)
 - `InputManager` — Layout-independent key capture via `KeyboardEvent.code`, last-pressed-wins
 - `PredictionBuffer` — Client-side prediction with server reconciliation on `lastProcessedSequenceNumber`
 - `NetworkClient` — `joinWorld(token, worldSaveId, characterName?)`, `sendInput()`, static `autoRegister()` (localStorage), static `createWorld()`, `listWorlds()`, `deleteWorld()`
@@ -289,10 +321,11 @@ When writing prompts, include the current state so the agent knows what exists:
 - `DEFAULT_WORLD_DATA` exported from `@ruin/shared`
 
 ### Tests
-- 75+ passing: 7 auth + 4 schema + 11 movement + 7 tick + 12 direction + 7 PredictionBuffer + 11 Interpolation + 8 persistence + 8 worldRoutes
+- 91+ passing: 8 auth + 4 schema + 10 movement + 13 persistence + 8 worldRoutes + 11 direction + 8 Interpolation + 16 movement(shared) + 2 schema(shared) + 11 idletimeout
 - Test DB: `ruin_test` (separate from dev DB `ruin`)
 - Tests use `createApp(pool)` directly (no Colyseus)
 - Persistence tests use beforeEach truncation for isolation
+- `fileParallelism: false` in vitest.config.ts — all DB tests share `ruin_test`
 
 ### Configuration
 - Full ESM, Node 20, TypeScript strict
