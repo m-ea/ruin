@@ -7,3 +7,6 @@ Thumbs.db
 postgres-data/
 *.tsbuildinfo
 .claude/
+# Added by code-review-graph
+.code-review-graph/
+.mcp.json
