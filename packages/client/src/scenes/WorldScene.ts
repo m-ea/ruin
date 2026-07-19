@@ -18,6 +18,7 @@ import { networkClient } from '../network/client';
 import { InputManager } from '../input/InputManager';
 import { PredictionBuffer } from '../network/PredictionBuffer';
 import { RemotePlayerInterpolation } from '../network/Interpolation';
+import { StatHud } from '../hud/StatHud';
 
 /** Remote player colors by add order. Cosmetic only — may differ across clients. */
 const REMOTE_COLORS = [
@@ -55,6 +56,7 @@ export class WorldScene extends Phaser.Scene {
   private idleCountdownText: Phaser.GameObjects.Text | null = null;
   private idleCountdownTimer: Phaser.Time.TimerEvent | null = null;
   private idleSecondsRemaining: number = 0;
+  private statHud: StatHud | null = null;
 
   constructor() {
     super({ key: 'World' });
@@ -92,6 +94,7 @@ export class WorldScene extends Phaser.Scene {
     }
 
     // 4. Set up state listeners
+    this.statHud = new StatHud(this);
     this.setupRoomListeners();
     this.setupLifecycleListeners();
 
@@ -150,9 +153,27 @@ export class WorldScene extends Phaser.Scene {
           TOWN_MAP.height * TILE_SIZE,
         );
 
+        // Initial HUD refresh — onChange (below) only fires on subsequent changes,
+        // so this shows correct values immediately rather than waiting for the first one.
+        this.statHud?.update({
+          health: player.stats.health,
+          stamina: player.stats.stamina,
+          essence: player.stats.essence,
+        });
+
         // Note: player parameter uses `any` type — Colyseus.js returns dynamically-typed
         // schema proxies. No static type is available without schema codegen.
         player.onChange(() => {
+          // Refresh the HUD on any change to the local player. onChange fires on any
+          // field change (position included), not just stats — that's fine here since
+          // recomputing three bars is cheap, and this still fires far less often than
+          // an unconditional 60Hz poll would.
+          this.statHud?.update({
+            health: player.stats.health,
+            stamina: player.stats.stamina,
+            essence: player.stats.essence,
+          });
+
           if (!this.room || !this.localSessionId) return;
           if (player.lastProcessedSequenceNumber > this.lastReconcileSeq) {
             this.lastReconcileSeq = player.lastProcessedSequenceNumber;
@@ -320,6 +341,12 @@ export class WorldScene extends Phaser.Scene {
       this.disconnectOverlay.destroy(true);
       this.disconnectOverlay = null;
     }
+    // Note: this method has no wiring to any Phaser scene lifecycle event (no
+    // `this.events.once('shutdown', ...)` etc.), so Phaser never calls it automatically —
+    // a pre-existing gap, not introduced here. Cleaning up statHud here anyway, for
+    // whenever that gap is closed.
+    this.statHud?.destroy();
+    this.statHud = null;
   }
 
   private setupLifecycleListeners(): void {
