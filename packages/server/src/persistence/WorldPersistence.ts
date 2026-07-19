@@ -6,7 +6,13 @@
  */
 
 import type { Pool } from 'pg';
-import { DEFAULT_WORLD_DATA } from '@ruin/shared';
+import {
+  DEFAULT_WORLD_DATA,
+  createDefaultStats,
+  createDefaultBodyHealth,
+  type Stats,
+  type BodyHealth,
+} from '@ruin/shared';
 
 export interface WorldSaveRow {
   id: string;
@@ -25,6 +31,13 @@ export interface CharacterRow {
   name: string;
   position_x: number;
   position_y: number;
+  /**
+   * Unlike world_data (deliberately generic/evolving, hence Record<string, unknown>),
+   * stats/body_health have a fully specified shape — typed strongly rather than loosely.
+   * pg parses JSONB columns into plain JS objects automatically on SELECT.
+   */
+  stats: Stats;
+  body_health: BodyHealth;
   created_at: Date;
   updated_at: Date;
 }
@@ -100,6 +113,11 @@ export async function deleteWorld(
 
 /**
  * Returns the character for a given account + world pair, or null if not found.
+ *
+ * Note: rows created before stats/body_health were populated (column default '{}')
+ * will deserialize with those fields empty rather than matching CharacterRow's
+ * strong typing. No real user data exists yet — reset/truncate the local dev
+ * database's characters table after this change lands, before manual testing.
  */
 export async function getCharacter(
   pool: Pool,
@@ -124,11 +142,22 @@ export async function createCharacter(
   spawnX: number,
   spawnY: number,
 ): Promise<CharacterRow> {
+  const stats = createDefaultStats();
+  const bodyHealth = createDefaultBodyHealth(stats.health.max);
+
   const result = await pool.query<CharacterRow>(
-    `INSERT INTO characters (account_id, world_id, name, position_x, position_y)
-     VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO characters (account_id, world_id, name, position_x, position_y, stats, body_health)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      RETURNING *`,
-    [accountId, worldId, name, spawnX, spawnY],
+    [
+      accountId,
+      worldId,
+      name,
+      spawnX,
+      spawnY,
+      JSON.stringify(stats),
+      JSON.stringify(bodyHealth),
+    ],
   );
   return result.rows[0]!;
 }

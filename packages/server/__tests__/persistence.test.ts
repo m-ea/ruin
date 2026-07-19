@@ -160,6 +160,27 @@ describe('createCharacter', () => {
     expect(char.position_y).toBe(20);
   });
 
+  it('creates a character with real (non-empty) default stats and body_health', async () => {
+    const accountId = await createTestAccount('char3@test.com');
+    const world = await createWorld(testPool, accountId, 'World Stats');
+
+    const char = await createCharacter(testPool, accountId, world.id, 'Statted', 0, 0);
+
+    expect(char.stats).toEqual({
+      health: { current: 100, max: 100 },
+      stamina: { current: 100, max: 100 },
+      essence: { current: 100, max: 100 },
+    });
+
+    // body_health maxes must match stats.health.max (the 1:1 relationship)
+    expect(char.body_health.head).toEqual({ current: 100, max: 100 });
+    expect(char.body_health.torso.max).toBe(char.stats.health.max);
+    expect(char.body_health.leftArm.max).toBe(char.stats.health.max);
+    expect(char.body_health.rightArm.max).toBe(char.stats.health.max);
+    expect(char.body_health.leftLeg.max).toBe(char.stats.health.max);
+    expect(char.body_health.rightLeg.max).toBe(char.stats.health.max);
+  });
+
   it('enforces UNIQUE(account_id, world_id) — second insert throws', async () => {
     const accountId = await createTestAccount('char2@test.com');
     const world = await createWorld(testPool, accountId, 'World B');
@@ -191,6 +212,17 @@ describe('getCharacter', () => {
       '00000000-0000-0000-0000-000000000001',
     );
     expect(result).toBeNull();
+  });
+
+  it('round-trips stats and body_health through Postgres unchanged', async () => {
+    const accountId = await createTestAccount('gc2@test.com');
+    const world = await createWorld(testPool, accountId, 'World D');
+    const created = await createCharacter(testPool, accountId, world.id, 'Roundtrip', 0, 0);
+
+    const found = await getCharacter(testPool, accountId, world.id);
+    expect(found).not.toBeNull();
+    expect(found!.stats).toEqual(created.stats);
+    expect(found!.body_health).toEqual(created.body_health);
   });
 });
 

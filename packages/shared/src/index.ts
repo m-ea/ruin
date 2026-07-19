@@ -8,7 +8,11 @@
 export type { IPlayer } from './types/player.js';
 export type { IWorldSave } from './types/world.js';
 export type { INpc } from './types/npc.js';
+export type { Resource, Stats, BodyHealth } from './types/character.js';
 export type { ClientToServerMessages, ServerToClientMessages } from './types/messages.js';
+
+// Export character stat/body-health pure functions
+export * from './character/stats.js';
 
 // Export input types and validation
 export * from './types/input.js';

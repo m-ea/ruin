@@ -1,3 +1,5 @@
+import type { Stats, BodyHealth } from './character.js';
+
 /**
  * Player character interface representing a player's state in the game.
  * Used for both in-memory state and database persistence.
@@ -15,8 +17,8 @@ export interface IPlayer {
   /** Tile coordinate Y position (integer) */
   y: number;
 
-  /** Character stats (e.g., strength, dexterity, vitality) */
-  stats: Record<string, number>;
+  /** Character stats: health, stamina, essence */
+  stats: Stats;
 
   /** Character skills and proficiency levels */
   skills: Record<string, number>;
@@ -27,6 +29,6 @@ export interface IPlayer {
   /** Equipped items by slot */
   equipment: Record<string, unknown>;
 
-  /** Body part health tracking (e.g., head, torso, limbs) */
-  bodyHealth: Record<string, number>;
+  /** Body part health tracking */
+  bodyHealth: BodyHealth;
 }

@@ -6,6 +6,33 @@
 import { Schema, MapSchema, type } from '@colyseus/schema';
 
 /**
+ * A bounded numeric quantity: a current value that can never exceed max.
+ * Standalone/reusable — not fields hardcoded directly onto PlayerState — so a
+ * future entity schema (e.g. an NPC) can embed StatsSchema/BodyHealthSchema too.
+ */
+export class ResourceSchema extends Schema {
+  @type('number') current: number = 100;
+  @type('number') max: number = 100;
+}
+
+/** Top-level character stats: health, stamina, essence. */
+export class StatsSchema extends Schema {
+  @type(ResourceSchema) health = new ResourceSchema();
+  @type(ResourceSchema) stamina = new ResourceSchema();
+  @type(ResourceSchema) essence = new ResourceSchema();
+}
+
+/** Per-body-part health tracking. */
+export class BodyHealthSchema extends Schema {
+  @type(ResourceSchema) head = new ResourceSchema();
+  @type(ResourceSchema) torso = new ResourceSchema();
+  @type(ResourceSchema) leftArm = new ResourceSchema();
+  @type(ResourceSchema) rightArm = new ResourceSchema();
+  @type(ResourceSchema) leftLeg = new ResourceSchema();
+  @type(ResourceSchema) rightLeg = new ResourceSchema();
+}
+
+/**
  * PlayerState represents a single player in the world.
  * This state is synchronized to all clients in the room.
  */
@@ -27,6 +54,12 @@ export class PlayerState extends Schema {
 
   /** Last input sequence number processed by the server (0 = none yet) */
   @type('number') lastProcessedSequenceNumber: number = 0;
+
+  /** Character stats: health, stamina, essence */
+  @type(StatsSchema) stats = new StatsSchema();
+
+  /** Per-body-part health */
+  @type(BodyHealthSchema) bodyHealth = new BodyHealthSchema();
 }
 
 /**
